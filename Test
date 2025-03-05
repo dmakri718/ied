@@ -1,0 +1,110 @@
+import requests
+from bs4 import BeautifulSoup
+import openai
+import pandas as pd
+import time
+from flask import Flask, render_template_string
+
+# Set your OpenAI API key
+openai.api_key = "YOUR_OPENAI_API_KEY"
+
+# URL of the IED project page
+URL = "https://ied.eu/eu-programmes/ied-projects/"
+
+# Initialize Flask app
+app = Flask(__name__)
+
+# Function to scrape project data
+def scrape_ied_projects():
+    response = requests.get(URL)
+    if response.status_code != 200:
+        print("Failed to fetch page")
+        return []
+    
+    soup = BeautifulSoup(response.text, 'html.parser')
+    project_list = []
+    
+    # Extract projects from the page
+    projects = soup.find_all('div', class_='elementor-post__text')
+    for project in projects:
+        title = project.find('h3').text.strip()
+        link = project.find('a')['href']
+        description = project.find('div', class_='elementor-post__excerpt').text.strip() if project.find('div', class_='elementor-post__excerpt') else ""
+        
+        project_list.append({
+            "title": title,
+            "link": link,
+            "description": description
+        })
+    
+    return project_list
+
+# Function to categorize projects using OpenAI
+def categorize_project(description):
+    prompt = f"""
+    Categorize the following project description into one of these categories:
+    - Schools
+    - Kids
+    - Adult Education
+    
+    Project description:
+    """
+    
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are an expert in education projects."},
+            {"role": "user", "content": prompt + description}
+        ]
+    )
+    
+    return response["choices"][0]["message"]["content"].strip()
+
+# Function to generate Google search links
+def generate_search_link(project_title):
+    query = f"{project_title} site:.eu OR site:.org OR site:.edu"
+    search_link = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+    return search_link
+
+# Flask route for the web app
+@app.route('/')
+def home():
+    df = pd.read_csv("ied_projects_search_links.csv")
+    html_template = """
+    <html>
+    <head><title>IED Project Categorizer</title></head>
+    <body>
+        <h1>IED Project Categorizer</h1>
+        <table border='1'>
+            <tr><th>Title</th><th>Description</th><th>Category</th><th>Search Link</th></tr>
+            {% for _, row in data.iterrows() %}
+                <tr>
+                    <td>{{ row['title'] }}</td>
+                    <td>{{ row['description'] }}</td>
+                    <td>{{ row['category'] }}</td>
+                    <td><a href='{{ row['search_link'] }}' target='_blank'>Search Results</a></td>
+                </tr>
+            {% endfor %}
+        </table>
+    </body>
+    </html>
+    """
+    return render_template_string(html_template, data=df)
+
+# Main function to scrape and categorize projects
+def main():
+    projects = scrape_ied_projects()
+    
+    for project in projects:
+        project['category'] = categorize_project(project['description'])
+        project['search_link'] = generate_search_link(project['title'])
+        time.sleep(1)  # Avoid API rate limits
+    
+    df = pd.DataFrame(projects)
+    df.to_csv("ied_projects_search_links.csv", index=False)
+    print("Projects categorized and saved with search links to CSV!")
+    
+    app.run(host='0.0.0.0', port=5000, debug=True)
+
+if __name__ == "__main__":
+    main()
